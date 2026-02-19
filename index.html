@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Standard Model 3D – No Auto-Rotate</title>
+    <style>
+        body { margin:0; overflow:hidden; background:#000; font-family:Arial, sans-serif; color:#fff; }
+        #ui { position:absolute; top:15px; left:15px; background:rgba(10,15,40,0.95); padding:18px 22px; border-radius:12px; max-width:340px; border:1px solid #4488ff; box-shadow:0 0 30px rgba(68,136,255,0.5); z-index:100; }
+        #tooltip { position:absolute; background:rgba(0,20,40,0.98); color:#00ffff; padding:12px 16px; border-radius:8px; font-size:24px; pointer-events:none; display:none; border:1px solid #44ffff; box-shadow:0 0 20px #00ffff; z-index:200; line-height:1.4; }
+        #infoPanel {
+            position:absolute; top:15px; right:15px; width:360px; background:rgba(10,15,40,0.95); padding:20px; border-radius:12px;
+            border:1px solid #ffdd88; box-shadow:0 0 30px rgba(255,220,136,0.4); z-index:100; display:none;
+        }
+        #infoPanel h2 { margin:0 0 15px 0; color:#ffdd88; }
+        #graphCanvas { border:1px solid #4488ff; background:#0a0f28; border-radius:6px; }
+        .formula { font-family:monospace; font-size:25px; color:#aaffaa; background:rgba(255,255,255,0.05); padding:6px 10px; border-radius:4px; margin:10px 0; }
+    </style>
+</head>
+<body>
+<div id="ui">
+    <h2>🌌 Standard Model Lagrangian – Interactive 3D</h2>
+    <p><strong>Hover</strong> any particle → name + formula<br>
+    <strong>Click any line</strong> → highlight + Distance vs Force graph<br>
+    <strong>Drag to rotate</strong> – it will slow down naturally in ~1 second (no auto-spin)</p>
+</div>
+<div id="tooltip"></div>
+
+<div id="infoPanel">
+    <h2 id="panelTitle"></h2>
+    <div id="panelDesc"></div>
+    <div class="formula" id="panelFormula"></div>
+    <canvas id="graphCanvas" width="340" height="220"></canvas>
+    <small style="display:block;margin-top:10px;color:#888;">Distance (arbitrary units) → Force strength</small>
+</div>
+
+<script src="three.min.js"></script>
+<script src="OrbitControls.js"></script>
+<script src="DragControls.js"></script>
+
+<script>
+// ====================== FULL VERSION – AUTO-ROTATE REMOVED ======================
+let scene, camera, renderer, orbit, dragCtrl;
+let particles = [];
+let interactionLines = [];
+let selectedLine = null;
+let raycaster = new THREE.Raycaster();
+let mouse = new THREE.Vector2();
+let tooltip = document.getElementById('tooltip');
+let infoPanel = document.getElementById('infoPanel');
+
+const particleData = {
+    "Higgs Field (Mexican hat)": { desc: "Spontaneous symmetry breaking", formula: "V(φ) = −μ²|φ|² + λ|φ|⁴" },
+    "U Quark": { desc: "Up-type quark", formula: "i ū γ^μ D_μ u − y_u ū φ u + g_s terms" },
+    "D Quark": { desc: "Down-type quark", formula: "i d̅ γ^μ D_μ d − y_d d̅ φ d + g_s terms" },
+    "C Quark": { desc: "Charm quark", formula: "i c̅ γ^μ D_μ c − y_c c̅ φ c + g_s terms" },
+    "S Quark": { desc: "Strange quark", formula: "i s̅ γ^μ D_μ s − y_s s̅ φ s + g_s terms" },
+    "T Quark": { desc: "Top quark", formula: "i t̅ γ^μ D_μ t − y_t t̅ φ t + g_s terms" },
+    "B Quark": { desc: "Bottom quark", formula: "i b̅ γ^μ D_μ b − y_b b̅ φ b + g_s terms" },
+    "e⁻ Lepton": { desc: "Electron", formula: "i ē γ^μ D_μ e − y_e ē φ e" },
+    "μ⁻ Lepton": { desc: "Muon", formula: "i μ̅ γ^μ D_μ μ − y_μ μ̅ φ μ" },
+    "τ⁻ Lepton": { desc: "Tau", formula: "i τ̅ γ^μ D_μ τ − y_τ τ̅ φ τ" },
+    "ν_e Lepton": { desc: "Electron neutrino", formula: "i ν̅_e γ^μ D_μ ν_e" },
+    "ν_μ Lepton": { desc: "Muon neutrino", formula: "i ν̅_μ γ^μ D_μ ν_μ" },
+    "ν_τ Lepton": { desc: "Tau neutrino", formula: "i ν̅_τ γ^μ D_μ ν_τ" },
+    "Photon (γ)": { desc: "Electromagnetic force carrier", formula: "−¼ F_μν F^μν" },
+    "W⁺": { desc: "Weak charged boson", formula: "−½ |D_μ W_ν⁺|² + g terms" },
+    "W⁻": { desc: "Weak charged boson", formula: "−½ |D_μ W_ν⁻|² + g terms" },
+    "Z⁰": { desc: "Weak neutral boson", formula: "−½ |D_μ Z_ν|² + g terms" }
+};
+
+function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x05050f);
+
+    camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 8, 25);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    document.body.appendChild(renderer.domElement);
+
+    scene.add(new THREE.AmbientLight(0xaaaaaa, 0.7));
+    scene.add(new THREE.HemisphereLight(0x88aaff, 0x112233, 0.6));
+    const point = new THREE.PointLight(0xffffff, 1.6);
+    point.position.set(10, 20, 25);
+    scene.add(point);
+
+    createStandardModel();
+
+    orbit = new THREE.OrbitControls(camera, renderer.domElement);
+    orbit.enableDamping = true;
+    orbit.dampingFactor = 0.22;   // ← tuned for ~1 second natural slowdown
+    orbit.enablePan = true;
+    orbit.autoRotate = false;     // ← AUTO-ROTATE COMPLETELY OFF
+
+    dragCtrl = new THREE.DragControls(particles, camera, renderer.domElement);
+    dragCtrl.addEventListener('dragstart', () => orbit.enabled = false);
+    dragCtrl.addEventListener('dragend', () => orbit.enabled = true);
+
+    window.addEventListener('resize', onWindowResize);
+    window.addEventListener('mousemove', onMouseMove);
+    renderer.domElement.addEventListener('click', onClick);
+
+    animate();
+}
+
+function createStandardModel() {
+    const sph = new THREE.SphereGeometry(0.65, 48, 48);
+
+    const higgsMat = new THREE.MeshPhongMaterial({ color: 0xffee77, emissive: 0xffaa00, shininess: 120 });
+    const higgs = new THREE.Mesh(sph, higgsMat);
+    higgs.scale.set(2.2, 2.2, 2.2);
+    higgs.userData.name = "Higgs Field (Mexican hat)";
+    scene.add(higgs);
+    particles.push(higgs);
+
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.15, 16, 64),
+        new THREE.MeshPhongMaterial({color: 0x664400, emissive: 0x331100, transparent: true, opacity: 0.25, side: THREE.DoubleSide}));
+    ring.rotation.x = Math.PI / 2;
+    scene.add(ring);
+
+    const quarkColors = [0xff3333, 0x33ff33, 0x6666ff];
+    const quarkNames = ["U","D","C","S","T","B"];
+    for (let i = 0; i < 6; i++) {
+        const mat = new THREE.MeshPhongMaterial({color: quarkColors[i%3], emissive: 0x220000});
+        const q = new THREE.Mesh(sph, mat);
+        const r = 5.5 + Math.random() * 1.5;
+        q.position.set(Math.cos(i*1.1)*r, (i-3)*0.9, Math.sin(i*1.1)*r*0.7);
+        q.userData.name = quarkNames[i] + " Quark";
+        q.scale.setScalar(0.7 + (i>3?0.4:0));
+        scene.add(q);
+        particles.push(q);
+    }
+
+    const leptonNames = ["e⁻","μ⁻","τ⁻","ν_e","ν_μ","ν_τ"];
+    leptonNames.forEach((name,i) => {
+        const mat = new THREE.MeshPhongMaterial({color: 0xaaffff, emissive: 0x003366});
+        const l = new THREE.Mesh(sph, mat);
+        l.position.set(-8 + i*2.8, 5.5 - Math.abs(i-2.5)*0.6, -4);
+        l.userData.name = name + " Lepton";
+        l.scale.setScalar(name.includes('ν') ? 0.55 : 0.9);
+        scene.add(l);
+        particles.push(l);
+    });
+
+    const bosons = [
+        {name:"Photon (γ)", color:0x99ffff, pos:[6,-6,8], scale:0.6},
+        {name:"W⁺", color:0xff44cc, pos:[-7,-7,5], scale:0.85},
+        {name:"W⁻", color:0xff44cc, pos:[-5.5,-8,3], scale:0.85},
+        {name:"Z⁰", color:0x88ff99, pos:[8,-5,-6], scale:1}
+    ];
+    bosons.forEach(b => {
+        const mat = new THREE.MeshPhongMaterial({color: b.color, emissive: b.color});
+        const mesh = new THREE.Mesh(sph, mat);
+        mesh.position.set(...b.pos);
+        mesh.scale.setScalar(b.scale);
+        mesh.userData.name = b.name;
+        scene.add(mesh);
+        particles.push(mesh);
+    });
+
+    createInteractionLines();
+}
+
+function createLine(a, b, color, type) {
+    const mat = new THREE.LineBasicMaterial({color, transparent:true, opacity:0.75});
+    const geo = new THREE.BufferGeometry().setFromPoints([a.position.clone(), b.position.clone()]);
+    const line = new THREE.Line(geo, mat);
+    line.userData.isLine = true;
+    line.userData.type = type;
+    line.userData.originalColor = color;
+    scene.add(line);
+    return line;
+}
+
+function createInteractionLines() {
+    const higgs = particles[0];
+    for (let i = 1; i < 13; i++) {
+        const line = createLine(higgs, particles[i], 0xffee77, 'yukawa');
+        interactionLines.push({line, a: higgs, b: particles[i]});
+    }
+    for (let i = 1; i < 7; i++) {
+        for (let j = i+1; j < 7; j++) {
+            if (Math.random() > 0.3) {
+                const line = createLine(particles[i], particles[j], 0xff4444, 'strong');
+                interactionLines.push({line, a: particles[i], b: particles[j]});
+            }
+        }
+    }
+    const photon = particles.find(p => p.userData.name.includes("Photon"));
+    if (photon) {
+        for (let i = 7; i < 13; i++) {
+            const line = createLine(photon, particles[i], 0x44ffff, 'em');
+            interactionLines.push({line, a: photon, b: particles[i]});
+        }
+    }
+    const w = particles.find(p => p.userData.name === "W⁺");
+    if (w) {
+        const line = createLine(w, particles[7], 0xff44ff, 'weak');
+        interactionLines.push({line, a: w, b: particles[7]});
+    }
+}
+
+function updateLines() {
+    interactionLines.forEach(item => {
+        const pos = item.line.geometry.attributes.position;
+        pos.setXYZ(0, item.a.position.x, item.a.position.y, item.a.position.z);
+        pos.setXYZ(1, item.b.position.x, item.b.position.y, item.b.position.z);
+        pos.needsUpdate = true;
+    });
+}
+
+function onMouseMove(e) {
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(particles);
+    if (hits.length > 0) {
+        const p = hits[0].object;
+        const data = particleData[p.userData.name] || {desc:"", formula:""};
+        tooltip.innerHTML = `<strong>${p.userData.name}</strong><br>${data.desc}<br><span style="font-size:13px;color:#aaffaa;">${data.formula}</span>`;
+        tooltip.style.display = 'block';
+        tooltip.style.left = (e.clientX + 18) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+    } else {
+        tooltip.style.display = 'none';
+    }
+}
+
+function onClick(e) {
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const allObjects = [...particles];
+    interactionLines.forEach(l => allObjects.push(l.line));
+    const hits = raycaster.intersectObjects(allObjects);
+    if (hits.length > 0) {
+        const obj = hits[0].object;
+        if (obj.userData.isLine) {
+            if (selectedLine) {
+                selectedLine.material.color.setHex(selectedLine.userData.originalColor);
+                selectedLine.material.opacity = 0.75;
+            }
+            selectedLine = obj;
+            obj.material.color.setHex(0xffffff);
+            obj.material.opacity = 1.0;
+            showInfoPanelForLine(obj.userData.type);
+        }
+    }
+}
+
+function showInfoPanelForLine(type) {
+    const titles = { yukawa: "Yukawa Coupling (Higgs → Mass)", strong: "Strong Force (Gluons)", em: "Electromagnetic (Photon)", weak: "Weak Force (W/Z)" };
+    const descs = {
+        yukawa: "Gives mass to fermions. Strength falls off exponentially.",
+        strong: "Binds quarks. At long distance: linear confinement.",
+        em: "Coulomb force. Classic 1/r² law.",
+        weak: "Very short range. Exponential decay."
+    };
+    const formulas = {
+        yukawa: "V(r) ≈ −g e^{−m r}/r",
+        strong: "V(r) ≈ σ r   (confinement)",
+        em: "F(r) = k / r²",
+        weak: "V(r) ≈ −g e^{−M r}/r"
+    };
+
+    document.getElementById('panelTitle').textContent = titles[type];
+    document.getElementById('panelDesc').innerHTML = descs[type];
+    document.getElementById('panelFormula').textContent = formulas[type];
+    infoPanel.style.display = 'block';
+    drawGraph(type);
+}
+
+function drawGraph(type) {
+    const canvas = document.getElementById('graphCanvas');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.strokeStyle = '#4488ff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(40, 190);
+    ctx.lineTo(320, 190);
+    ctx.moveTo(40, 190);
+    ctx.lineTo(40, 30);
+    ctx.stroke();
+
+    ctx.fillStyle = '#88aaff';
+    ctx.font = '12px Arial';
+    ctx.fillText('Distance', 160, 210);
+    ctx.save();
+    ctx.translate(20, 110);
+    ctx.rotate(-Math.PI/2);
+    ctx.fillText('Force / Potential', 0, 0);
+    ctx.restore();
+
+    ctx.strokeStyle = '#ffdd88';
+    ctx.lineWidth = 3;
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = '#ffdd88';
+    ctx.beginPath();
+
+    const maxR = 250;
+    const points = [];
+    for (let x = 0; x <= maxR; x += 4) {
+        let y;
+        const r = x / 30 + 0.2;
+        if (type === 'em') y = 180 - 140 / (r*r + 0.1);
+        else if (type === 'strong') y = 180 - (r * 35);
+        else if (type === 'yukawa') y = 180 - 110 * Math.exp(-r*1.8) / (r + 0.3);
+        else y = 180 - 90 * Math.exp(-r*2.5) / (r + 0.2);
+        points.push({x: 40 + x, y: Math.max(35, Math.min(185, y))});
+    }
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = '#ffdd88';
+    ctx.fillText('0', 35, 200);
+    ctx.fillText('large', 290, 200);
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    if (orbit) orbit.update();
+    updateLines();
+    renderer.render(scene, camera);
+}
+
+init();
+</script>
+</body>
+</html>
